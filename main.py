@@ -1,6 +1,7 @@
 """Unified CLI for Nmap-Toolkit.
 
-Run ``python main.py discovery --help`` or ``python main.py enum --help``.
+Run ``python main.py discovery --help``, ``python main.py enum --help``,
+or ``python main.py nse --help``.
 Further reconnaissance phases register additional subcommands here.
 """
 
@@ -13,9 +14,10 @@ from rich.console import Console
 from rich.markup import escape
 
 from core.runner import NmapError
-from modules import discovery, enum
+from modules import discovery, enum, nse
 from modules.discovery import TargetError
 from modules.enum import EnumError
+from modules.nse import NseError
 
 console = Console(stderr=True)
 
@@ -28,14 +30,15 @@ are explicitly allowed to perform.
 modules:
   discovery    Live host discovery and a fast all-TCP-port scan
   enum         Service versions, default scripts, and OS detection
+  nse          Service-specific NSE scripts from the CPTS syllabus
 """
 
 _EPILOG = """\
 examples:
   python main.py discovery -t 10.10.10.0/24 --method arp-icmp
-  python main.py discovery -t 10.10.10.10 --method syn
   python main.py enum --latest
-  python main.py enum -t 10.10.10.10 -p 22,80,445
+  python main.py nse --latest
+  python main.py nse -t 10.10.10.10 -p 22,80,445
 """
 
 
@@ -50,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="module", required=True, metavar="module")
     discovery.register(subparsers)
     enum.register(subparsers)
+    nse.register(subparsers)
     return parser
 
 
@@ -67,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return int(handler(args))
-    except (NmapError, TargetError, EnumError) as exc:
+    except (NmapError, TargetError, EnumError, NseError) as exc:
         console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
         return 1
     except KeyboardInterrupt:

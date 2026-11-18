@@ -1,6 +1,6 @@
 # Nmap-Toolkit
 
-Toolkit de reconocimiento para las dos primeras fases de un pentest al estilo CPTS: descubrir qué hosts están activos, barrer sus puertos TCP y enumerar versiones, scripts por defecto y sistema operativo. Las salidas quedan en `reports/` para encadenar los módulos sin volver a parsear el XML de Nmap.
+Toolkit de reconocimiento para un pentest al estilo CPTS: descubrir hosts, enumerar servicios y lanzar solo los scripts NSE que corresponden a esos servicios. Las salidas quedan en `reports/` para encadenar los módulos sin volver a parsear el XML de Nmap.
 
 ## Disclaimer
 
@@ -10,7 +10,7 @@ Esta herramienta es exclusivamente para entornos de laboratorio (Hack The Box, C
 
 - Python 3.11 o superior
 - [Nmap](https://nmap.org/download.html) instalado y disponible en el `PATH`
-- Privilegios de administrador (Windows) o root (Linux) para el descubrimiento ARP/ICMP y SYN ping, para la detección de sistema operativo (`-O`) y para UDP (`-sU`). Sin elevación, el descubrimiento con sondas raw se detiene con un aviso; el barrido de puertos pasa a TCP connect (`-sT`) y `enum` omite `-O`. `--udp` no arranca si faltan privilegios.
+- Privilegios de administrador (Windows) o root (Linux) para el descubrimiento ARP/ICMP y SYN ping, para la detección de sistema operativo (`-O`), para UDP (`-sU`) y para los scripts NSE sobre UDP (SNMP y DNS UDP). Sin elevación, el descubrimiento con sondas raw se detiene con un aviso; el barrido de puertos pasa a TCP connect (`-sT`); `enum` omite `-O` y `--udp` no arranca; `nse` ejecuta los scripts TCP y deja fuera los UDP.
 
 ## Instalación
 
@@ -28,6 +28,7 @@ core/runner.py          Ejecución segura de nmap, privilegios y XML (-oX)
 core/parser.py          Parser XML → diccionarios (IP, hostname, puertos)
 modules/discovery.py    Host discovery + fast TCP port scan
 modules/enum.py         Service enumeration (-sV -sC -O) y UDP opcional
+modules/nse.py          Scripts NSE elegidos por servicio
 requirements.txt
 reports/                Artefactos de cada ejecución (no se versiona)
 ```
@@ -307,3 +308,110 @@ Forma del JSON:
 ```
 
 `os_detection` es `false` cuando faltan privilegios y `-O` no se ejecutó. `commands` guarda los argv reales; el primer elemento es la ruta de `nmap` en ese equipo.
+
+## Módulo `nse` — Scripts NSE por servicio
+
+Tercera fase CPTS. Lee el JSON de `enum` o de `discovery` y lanza solo los scripts del temario que corresponden a los puertos y servicios abiertos. Un puerto sin familia conocida no se escanea, así que el módulo no recorre el catálogo entero de NSE.
+
+### Entrada
+
+Una sola fuente:
+
+| Modo | Flags | Qué se lee |
+| --- | --- | --- |
+| Último informe | `--latest` | El `enum_*.json` o `discovery_*.json` más reciente en `reports/`. Si `enum` es más nuevo, gana, porque trae el nombre del servicio. |
+| JSON concreto | `--input <fichero>` | Un informe de `enum` o de `discovery`. |
+| Manual | `-t <target> -p <puertos>` | La IP, el CIDR, el hostname o un fichero de objetivos. Un rango amplio se reduce a los puertos de la tabla de abajo. |
+
+### Mapa de scripts
+
+El puerto o el nombre del servicio activan la familia. Kerberos y LDAP van separados: el 88 no ejecuta scripts LDAP, y el 389 no ejecuta el de Kerberos.
+
+| Servicio | Puertos | Scripts |
+| --- | --- | --- |
+| HTTP/HTTPS | 80, 443, 8080, 8443, o servicio `http`/`https` | `http-title`, `http-headers`, `http-methods`, `http-robots.txt`, `http-enum` |
+| SMB | 139, 445 | `smb-os-discovery`, `smb-enum-shares`, `smb-enum-users`, `smb-protocols` |
+| FTP | 21 | `ftp-anon`, `ftp-syst`, `ftp-bounce` |
+| SSH | 22 | `ssh2-enum-algos`, `ssh-hostkey`, `ssh-auth-methods` |
+| DNS | 53 | `dns-nsid`, `dns-recursion`, `dns-zone-transfer` |
+| SNMP | 161/udp | `snmp-info`, `snmp-sysdescr`, `snmp-interfaces` |
+| Kerberos | 88 | `krb5-enum-users` |
+| LDAP | 389 | `ldap-rootdse`, `ldap-search` |
+
+En modo manual el 53 se trata como DNS sobre TCP. El 161 se trata como SNMP sobre UDP. Si el JSON marca el 53 como `udp`, ese sondeo también es UDP.
+
+Los hosts que comparten el mismo protocolo, los mismos puertos y los mismos scripts entran en una sola invocación de Nmap. El comando es `-n -Pn -sV -p <puertos> --script <scripts>` y, en UDP, `-sU`. `-sV` se limita a esos puertos para que las reglas de los scripts reconozcan el servicio.
+
+SNMP y el DNS UDP necesitan privilegios. Sin ellos el módulo avisa, omite esos puertos y sigue con el resto.
+
+### Flags extra
+
+- `--vuln` añade la categoría `vuln` a los puertos que ya tienen una familia. Si el script `vulners.nse` está instalado junto a Nmap, también se incluye. No barre el resto de puertos abiertos.
+- `--custom-scripts banner,http-title` añade nombres sueltos. Solo acepta nombres de script o categorías: rechaza rutas, flags y metacaracteres. En un rango manual de más de 128 puertos hay que listar los puertos, no pasar el rango entero.
+
+### Ejemplos
+
+Encadenar con el enum o el discovery más reciente:
+
+```bash
+python main.py nse --latest
+```
+
+El mismo flujo más la categoría de vulnerabilidades:
+
+```bash
+python main.py nse --input reports/enum_10.10.10.10_20261118T224500.json --vuln
+```
+
+Objetivo manual. De `1-1000` solo se conservan los puertos de la tabla:
+
+```bash
+python main.py nse -t 10.10.10.10 -p 22,80,445
+python main.py nse -t 10.10.10.10 -p 1-1000
+```
+
+Un script concreto sobre un puerto que no está en el mapa:
+
+```bash
+python main.py nse -t 10.10.10.10 -p 8000 --custom-scripts http-title,banner
+```
+
+### Salida esperada
+
+Antes del escaneo se imprime el plan (puertos y scripts). Al terminar, cada hallazgo sale con el id del script y su texto:
+
+```text
+TCP 10.10.10.10 ports 22,80,445
+  scripts: ssh2-enum-algos,ssh-hostkey,ssh-auth-methods,http-title,http-headers,http-methods,http-robots.txt,http-enum,smb-os-discovery,smb-enum-shares,smb-enum-users,smb-protocols
+
+NSE enumeration (10.10.10.10)
+nmap -n -Pn -sV -p 22,80,445 --script ssh2-enum-algos,ssh-hostkey,... 10.10.10.10
+
+10.10.10.10 (dc.htb)
+  22/tcp ssh
+    ssh-auth-methods
+      Supported authentication methods: publickey password
+  80/tcp http
+    http-title
+      Hack The Box
+  445/tcp microsoft-ds
+    smb-os-discovery
+      OS: Windows Server 2019
+
+Hosts: 1 | Script results: 3
+
+JSON report: reports/nse_10.10.10.10_20261118T230500.json
+Markdown summary: reports/nse_10.10.10.10_20261118T230500.md
+Nmap XML: reports/nse_10.10.10.10_20261118T230500_tcp.xml
+```
+
+### Artefactos
+
+| Fichero | Contenido |
+| --- | --- |
+| `nse_<target>_<timestamp>.json` | Hosts, scripts seleccionados, salida de cada `<script>` y puertos omitidos. |
+| `nse_<target>_<timestamp>.md` | Notas por host y puerto, con la salida de cada script en un bloque de texto. |
+| `nse_<target>_<timestamp>_tcp.xml` | XML crudo. Con un solo grupo el nombre es `_tcp.xml` o `_udp.xml`. Con varios, el índice sigue el orden de ejecución (`_tcp_1.xml`, `_udp_2.xml`). |
+
+Cada puerto del JSON guarda `selected_scripts` (lo que se pidió) y `scripts` (lo que Nmap devolvió: `id` y `output`). Los scripts colgados del host, como algunos resultados SMB, quedan en `hosts[].scripts`.
+

@@ -23,6 +23,7 @@ def parse_nmap_xml(xml_path: str | Path) -> list[dict[str, Any]]:
     - ``ports``: list of ``port``, ``protocol``, ``state``, ``service``,
       ``product``, ``version``, ``extrainfo``, and ``scripts``.
     - ``os_matches``: OS guesses from ``-O``, highest accuracy first.
+    - ``scripts``: host-level NSE output from ``<hostscript>``.
 
     Args:
         xml_path: Path to an Nmap XML report.
@@ -83,6 +84,7 @@ def _parse_host(host_node: ET.Element) -> dict[str, Any]:
         "hostnames": hostnames,
         "status": status,
         "os_matches": _parse_os(host_node),
+        "scripts": _parse_host_scripts(host_node),
         "ports": ports,
     }
 
@@ -99,15 +101,6 @@ def _parse_port(port_node: ET.Element) -> dict[str, Any]:
         version = (service_node.get("version") or "").strip()
         extrainfo = (service_node.get("extrainfo") or "").strip()
 
-    scripts: list[dict[str, str]] = []
-    for script in _children(port_node, "script"):
-        script_id = (script.get("id") or "").strip()
-        output = (script.get("output") or "").strip()
-        if len(output) > 4000:
-            output = output[:4000] + "..."
-        if script_id or output:
-            scripts.append({"id": script_id, "output": output})
-
     return {
         "port": int(port_id) if port_id.isdigit() else port_id,
         "protocol": (port_node.get("protocol") or "").strip(),
@@ -116,8 +109,28 @@ def _parse_port(port_node: ET.Element) -> dict[str, Any]:
         "product": product,
         "version": version,
         "extrainfo": extrainfo,
-        "scripts": scripts,
+        "scripts": _parse_script_elements(port_node),
     }
+
+
+def _parse_host_scripts(host_node: ET.Element) -> list[dict[str, str]]:
+    """Return NSE results attached to the host rather than to a port."""
+    scripts: list[dict[str, str]] = []
+    for hostscript in _children(host_node, "hostscript"):
+        scripts.extend(_parse_script_elements(hostscript))
+    return scripts
+
+
+def _parse_script_elements(parent: ET.Element) -> list[dict[str, str]]:
+    scripts: list[dict[str, str]] = []
+    for script in _children(parent, "script"):
+        script_id = (script.get("id") or "").strip()
+        output = (script.get("output") or "").strip()
+        if len(output) > 4000:
+            output = output[:4000] + "..."
+        if script_id or output:
+            scripts.append({"id": script_id, "output": output})
+    return scripts
 
 
 def _parse_os(host_node: ET.Element) -> list[dict[str, Any]]:
