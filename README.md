@@ -1,6 +1,6 @@
 # Nmap-Toolkit
 
-Toolkit de reconocimiento para un pentest al estilo CPTS: descubrir hosts, enumerar servicios y lanzar solo los scripts NSE que corresponden a esos servicios. Las salidas quedan en `reports/` para encadenar los módulos sin volver a parsear el XML de Nmap.
+Toolkit de reconocimiento para un pentest al estilo CPTS: descubrir hosts, enumerar servicios, lanzar solo los scripts NSE que corresponden a esos servicios y, cuando el laboratorio lo pide, distinguir un firewall con estado de un puerto alcanzable o repetir la sonda con opciones de evasión. Las salidas quedan en `reports/` para encadenar los módulos sin volver a parsear el XML de Nmap.
 
 ## Disclaimer
 
@@ -10,7 +10,7 @@ Esta herramienta es exclusivamente para entornos de laboratorio (Hack The Box, C
 
 - Python 3.11 o superior
 - [Nmap](https://nmap.org/download.html) instalado y disponible en el `PATH`
-- Privilegios de administrador (Windows) o root (Linux) para el descubrimiento ARP/ICMP y SYN ping, para la detección de sistema operativo (`-O`), para UDP (`-sU`) y para los scripts NSE sobre UDP (SNMP y DNS UDP). Sin elevación, el descubrimiento con sondas raw se detiene con un aviso; el barrido de puertos pasa a TCP connect (`-sT`); `enum` omite `-O` y `--udp` no arranca; `nse` ejecuta los scripts TCP y deja fuera los UDP.
+- Privilegios de administrador (Windows) o root (Linux) para el descubrimiento ARP/ICMP y SYN ping, para la detección de sistema operativo (`-O`), para UDP (`-sU`), para los scripts NSE sobre UDP (SNMP y DNS UDP) y para todo el módulo `evasion` (`-sA`, `-sS`, `-f`, `--mtu`, `-D`). Sin elevación, el descubrimiento con sondas raw se detiene con un aviso; el barrido de puertos pasa a TCP connect (`-sT`); `enum` omite `-O` y `--udp` no arranca; `nse` ejecuta los scripts TCP y deja fuera los UDP; `evasion` no arranca, porque un connect scan no puede expresar ACK, fragmentación ni señuelos.
 
 ## Instalación
 
@@ -29,11 +29,21 @@ core/parser.py          Parser XML → diccionarios (IP, hostname, puertos)
 modules/discovery.py    Host discovery + fast TCP port scan
 modules/enum.py         Service enumeration (-sV -sC -O) y UDP opcional
 modules/nse.py          Scripts NSE elegidos por servicio
+modules/evasion.py      Firewall ACK map y evasión IDS/IPS seleccionable
 requirements.txt
 reports/                Artefactos de cada ejecución (no se versiona)
 ```
 
-`reports/` se crea sola en la primera ejecución. Ni `reports/` ni `.cursor/` se suben al repositorio. Cada script de `modules/` también se ejecuta solo: el objetivo puede ir como primer argumento (`python modules/discovery.py 10.10.10.10`) o con `-t`.
+`reports/` se crea sola en la primera ejecución. Ni `reports/` ni `.cursor/` se suben al repositorio.
+
+Cada script de `modules/` se ejecuta solo o desde `main.py`. El objetivo puede ir como primer argumento posicional o con `-t`. `enum`, `nse` y `evasion` también aceptan `--latest` cuando el paso anterior ya dejó un JSON en `reports/`.
+
+| Módulo | Ejecución directa | Desde `main.py` |
+| --- | --- | --- |
+| `discovery` | `python modules/discovery.py 10.10.10.10` | `python main.py discovery -t 10.10.10.10` |
+| `enum` | `python modules/enum.py 10.10.10.10 -p 22,80,445` | `python main.py enum 10.10.10.10 -p 22,80,445` |
+| `nse` | `python modules/nse.py 10.10.10.10 -p 22,80,445` | `python main.py nse 10.10.10.10 -p 22,80,445` |
+| `evasion` | `python modules/evasion.py 10.10.10.10 -p 22,80,443` | `python main.py evasion 10.10.10.10 -p 22,80,443` |
 
 ## Módulo `discovery` — Host Discovery y Fast Port Scanning
 
@@ -435,4 +445,87 @@ Nmap XML: reports/nse_10.10.10.10_20261118T230500_tcp.xml
 | `nse_<target>_<timestamp>_tcp.xml` | XML crudo. Con un solo grupo el nombre es `_tcp.xml` o `_udp.xml`. Con varios, el índice sigue el orden de ejecución (`_tcp_1.xml`, `_udp_2.xml`). |
 
 Cada puerto del JSON guarda `selected_scripts` (lo que se pidió) y `scripts` (lo que Nmap devolvió: `id` y `output`). Los scripts colgados del host, como algunos resultados SMB, quedan en `hosts[].scripts`.
+
+## Módulo `evasion` — Firewall e IDS/IPS
+
+Cuarta fase CPTS. Sirve cuando un puerto no aparece en el discovery, o cuando el laboratorio pide repetir una sonda sin disparar un umbral. Hay dos modos. Los dos exigen administrador o root y se detienen antes de lanzar Nmap si faltan raw sockets.
+
+Si no pasas `-p` en un objetivo manual, el comando usa los puertos de servicio del temario: `21,22,53,80,88,135,139,443,445,3389,8080`. `-p -` pide todos los puertos TCP (`-p-`). `--latest` y `--input` leen un JSON de discovery. Sin `-p`, cada host se sonda solo en sus puertos TCP abiertos; si el informe no tiene ninguno, hay que indicar `-p`.
+
+### Cuándo usar cada técnica
+
+| Técnica | Flag del módulo | Qué ejecuta Nmap | Cuándo usarla |
+| --- | --- | --- | --- |
+| Mapa ACK | `--mode firewall-map` (defecto) | `-sA -Pn -n` | Quieres separar un firewall con estado de un puerto que responde. `filtered` significa que el ACK se descartó. `unfiltered` significa RST: el puerto no está filtrado, pero este modo no distingue `open` de `closed`. |
+| Origen DNS | `--source-port 53` | `--source-port 53` | La regla deja pasar DNS. Es el origen por defecto del modo stealth. |
+| Origen Kerberos | `--source-port 88` | `--source-port 88` | El segmento permite Kerberos y filtra otros puertos de origen. |
+| Fragmentación corta | `--fragment` | `-f` | El IDS no reensambla IP. No se combina con `--mtu`. |
+| MTU fijo | `--mtu 16` o `--mtu 24` | `--mtu 16` | Quieres un tamaño concreto. Tiene que ser múltiplo de 8, entre 8 y 1500. |
+| Señuelos | `--decoys 5` | `-D RND:5` | Quieres la IP real mezclada con orígenes aleatorios. Nmap inserta tu dirección en una posición aleatoria de esa lista. De 1 a 25. |
+| Ritmo bajo | `--timing 2 --scan-delay 500ms` | `-T2 --scan-delay 500ms` | El IDS corta por número de sondas por segundo. Solo se aceptan `-T0`, `-T1` y `-T2`. Un número suelto en `--scan-delay` son segundos; `500ms` son milisegundos. El tope es 30 minutos. |
+
+El modo stealth siempre parte de `-sS -Pn -n` y añade solo las técnicas que pides. `--fragment` y `--mtu` juntos se rechazan, igual que haría Nmap. Esas flags no valen en `firewall-map`.
+
+### Ejemplos
+
+Mapa ACK del conjunto de puertos por defecto. El objetivo va el primero:
+
+```bash
+python modules/evasion.py 10.10.10.10
+python main.py evasion 10.10.10.10 -p 22,80,443
+```
+
+Sonda SYN con origen DNS, fragmentos de 8 bytes, cinco señuelos y una pausa de 500 ms:
+
+```bash
+python main.py evasion --mode stealth-evasion 10.10.10.10 -p 80 --source-port 53 --fragment --decoys 5 --timing 2 --scan-delay 500ms
+```
+
+La misma idea con MTU 24 y origen Kerberos, lanzada directo:
+
+```bash
+python modules/evasion.py --mode stealth-evasion -t 10.10.10.10 -p 88 --source-port 88 --mtu 24 --timing 1 --scan-delay 1s
+```
+
+Encadenar con el discovery más reciente, sobre los puertos TCP que ya salieron abiertos:
+
+```bash
+python main.py evasion --latest
+python modules/evasion.py --latest -p 22,445
+```
+
+### Salida esperada
+
+La consola imprime el comando antes de ejecutarlo. Ese es el bloque que se copia a las notas del CPTS. Sin privilegios el proceso se para ahí, con el aviso de cómo relanzarlo como administrador o root.
+
+```text
+firewall-map — TCP ACK (-sA -Pn -n)
+ACK results: filtered was dropped by a stateful filter; unfiltered returned RST, so the port is not filtered. This probe does not tell open from closed.
+Nmap command
+nmap -sA -Pn -n -p 22,80,443 10.10.10.10
+
+Port states
+IP            Port     State        Reason        Service
+10.10.10.10   22/tcp   unfiltered   reset         -
+10.10.10.10   80/tcp   filtered     no-response   -
+10.10.10.10   443/tcp  filtered     no-response   -
+
+Hosts: 1 | Ports: 3 | unfiltered: 1 | filtered: 2
+
+JSON report: reports/evasion_10.10.10.10_20261118T231500.json
+Markdown summary: reports/evasion_10.10.10.10_20261118T231500.md
+Nmap XML: reports/evasion_10.10.10.10_20261118T231500.xml
+```
+
+Los estados dependen del laboratorio. La forma de la tabla no.
+
+### Artefactos
+
+| Fichero | Contenido |
+| --- | --- |
+| `evasion_<target>_<timestamp>.json` | Modo, flags efectivas, hosts y el estado de cada puerto (`open`, `closed`, `filtered`, `unfiltered`). |
+| `evasion_<target>_<timestamp>.md` | Comando exacto, con la ruta de `nmap` y `-oX`, más la tabla de estados. |
+| `evasion_<target>_<timestamp>.xml` | XML crudo. Con varios grupos de puertos el nombre lleva índice (`_1.xml`, `_2.xml`). |
+
+`commands` guarda el argv real. `state_counts` resume cuántos puertos cayeron en cada estado.
 

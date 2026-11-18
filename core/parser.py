@@ -20,8 +20,8 @@ def parse_nmap_xml(xml_path: str | Path) -> list[dict[str, Any]]:
     - ``mac``: MAC address when Nmap observed one (typical of ARP discovery).
     - ``hostnames``: resolved names, in the order Nmap emitted them.
     - ``status``: host state such as ``up`` or ``down``.
-    - ``ports``: list of ``port``, ``protocol``, ``state``, ``service``,
-      ``product``, ``version``, ``extrainfo``, and ``scripts``.
+    - ``ports``: list of ``port``, ``protocol``, ``state``, ``reason``,
+      ``service``, ``product``, ``version``, ``extrainfo``, and ``scripts``.
     - ``os_matches``: OS guesses from ``-O``, highest accuracy first.
     - ``scripts``: host-level NSE output from ``<hostscript>``.
 
@@ -100,11 +100,13 @@ def _parse_port(port_node: ET.Element) -> dict[str, Any]:
         product = (service_node.get("product") or "").strip()
         version = (service_node.get("version") or "").strip()
         extrainfo = (service_node.get("extrainfo") or "").strip()
+    state_node = state_nodes[0] if state_nodes else None
 
     return {
         "port": int(port_id) if port_id.isdigit() else port_id,
         "protocol": (port_node.get("protocol") or "").strip(),
-        "state": state_nodes[0].get("state", "unknown") if state_nodes else "unknown",
+        "state": state_node.get("state", "unknown") if state_node is not None else "unknown",
+        "reason": (state_node.get("reason") or "").strip() if state_node is not None else "",
         "service": service,
         "product": product,
         "version": version,

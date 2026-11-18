@@ -19,7 +19,7 @@ from pathlib import Path
 # and the TCP null/FIN/Xmas family). Connect scans (``-sT``) and version
 # detection (``-sV``) are intentionally excluded.
 _PRIVILEGED_SCAN_LETTERS = frozenset("SUAWMNFXO")
-_PRIVILEGED_EXACT = frozenset({"-O", "-f"})
+_PRIVILEGED_EXACT = frozenset({"-O", "-f", "--mtu"})
 _PRIVILEGED_PREFIXES = (
     "-D",
     "-PE",
@@ -136,8 +136,9 @@ def command_requires_privileges(arguments: list[str]) -> bool:
     """Return whether any Nmap argument needs administrator or root rights.
 
     Covers the techniques called out by the project standard (``-sS``,
-    ``-sU``, ``-O``, ``-sA``, ``-f``, ``-D``) plus raw host-discovery probes
-    (``-PE``, ``-PR``, ``-PS``, and the related ``-P*`` family).
+    ``-sU``, ``-O``, ``-sA``, ``-f``, ``--mtu``, ``-D``) plus raw
+    host-discovery probes (``-PE``, ``-PR``, ``-PS``, and the related
+    ``-P*`` family).
     """
     for arg in arguments:
         if arg in _PRIVILEGED_EXACT:
