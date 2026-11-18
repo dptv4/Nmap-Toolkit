@@ -450,11 +450,7 @@ Cada puerto del JSON guarda `selected_scripts` (lo que se pidió) y `scripts` (l
 
 Cuarta fase CPTS. Sirve cuando un puerto no aparece en el discovery, o cuando el laboratorio pide repetir una sonda sin disparar un umbral. Hay dos modos. Los dos exigen administrador o root y se detienen antes de lanzar Nmap si faltan raw sockets.
 
-<<<<<<< Updated upstream
 Si no pasas `-p` en un objetivo manual, el comando usa los puertos de servicio del temario: `21,22,53,80,88,135,139,443,445,3389,8080`. `-p -` pide todos los puertos TCP (`-p-`). `--latest` y `--input` leen un JSON de discovery. Sin `-p`, cada host se sonda solo en sus puertos TCP abiertos; si el informe no tiene ninguno, hay que indicar `-p`.
-=======
-Si no pasas `-p`, el comando usa los puertos de servicio del temario: `21,22,53,80,88,135,139,443,445,3389,8080`. `-p -` pide todos los puertos TCP (`-p-`). `--latest` y `--input` leen un JSON de discovery: sin `-p`, cada host se sonda en sus puertos TCP abiertos.
->>>>>>> Stashed changes
 
 ### Cuándo usar cada técnica
 
