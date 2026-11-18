@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Targeted NSE scripts for the services found by discovery or enum.
 
 The module maps open ports and service names to a small CPTS script set and
@@ -8,6 +9,20 @@ says the port is UDP) need administrator or root privileges.
 
 from __future__ import annotations
 
+import os
+import sys
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if os.path.normcase(os.path.abspath(entry or os.getcwd())) != os.path.normcase(_script_dir)
+]
+
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import ipaddress
 import json
@@ -16,7 +31,6 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -24,6 +38,7 @@ from rich.markup import escape
 
 from core.parser import parse_nmap_xml
 from core.runner import (
+    NmapError,
     NmapNotFoundError,
     NmapRunResult,
     ensure_reports_dir,
@@ -33,7 +48,7 @@ from core.runner import (
     project_root,
     run_nmap,
 )
-from modules.discovery import load_target_args
+from modules.discovery import TargetError, load_target_args
 from modules.enum import EnumError, normalize_port_spec
 
 console = Console()
@@ -164,11 +179,43 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         epilog=(
             "examples:\n"
             "  python main.py nse --latest\n"
-            "  python main.py nse --input reports/enum_10.10.10.10_20261118T224500.json\n"
-            "  python main.py nse -t 10.10.10.10 -p 22,80,445\n"
-            "  python main.py nse --latest --vuln\n"
-            "  python main.py nse -t 10.10.10.10 -p 80 --custom-scripts http-title,banner\n"
+            "  python main.py nse 10.10.10.10 -p 22,80,445\n"
+            "  python modules/nse.py 10.10.10.10 -p 22,80,445\n"
+            "  python modules/nse.py --latest --vuln\n"
         ),
+    )
+    _add_arguments(parser)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the parser used when this file is executed directly."""
+    parser = argparse.ArgumentParser(
+        prog="nse",
+        description=(
+            "CPTS phase 3: run the NSE scripts that match discovered services. "
+            "Pass the target as the first argument or with -t, or chain a report "
+            "with --latest or --input. "
+            "Use only against lab ranges or networks you are authorized to test."
+        ),
+        epilog=(
+            "examples:\n"
+            "  python modules/nse.py 10.10.10.10 -p 22,80,445\n"
+            "  python3 modules/nse.py --latest\n"
+            "  python modules/nse.py -t 10.10.10.10 -p 80 --custom-scripts http-title\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_arguments(parser)
+    return parser
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the NSE arguments shared by ``main.py`` and direct execution."""
+    parser.add_argument(
+        "target_arg",
+        nargs="?",
+        metavar="target",
+        help="Manual target: IPv4/IPv6, CIDR, hostname, or a file with one target per line",
     )
     parser.add_argument(
         "--input",
@@ -182,7 +229,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.add_argument(
         "-t",
         "--target",
-        help="Manual target: IPv4/IPv6, CIDR, hostname, or a file with one target per line",
+        dest="target_flag",
+        help="Same as the positional target. Use one of the two, not two different values",
     )
     parser.add_argument(
         "-p",
@@ -545,7 +593,7 @@ def load_service_hosts(path: Path) -> tuple[str, list[dict[str, Any]], str]:
 
 def _from_args(args: argparse.Namespace) -> int:
     run_nse(
-        target=args.target,
+        target=_selected_target(args),
         ports=args.ports,
         input_path=args.input,
         latest=args.latest,
@@ -553,6 +601,35 @@ def _from_args(args: argparse.Namespace) -> int:
         custom_scripts=args.custom_scripts,
     )
     return 0
+
+
+def _selected_target(args: argparse.Namespace) -> str | None:
+    """Return the positional target or ``-t``, rejecting two different values."""
+    positional = getattr(args, "target_arg", None)
+    flag = getattr(args, "target_flag", None)
+    if positional and flag and positional != flag:
+        raise NseError(
+            "Pass the target either as the first argument or with -t, not two different values."
+        )
+    return flag or positional
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run NSE selection from the command line.
+
+    Nmap and input errors are printed as a single message.
+    """
+    parser = build_parser()
+    err = Console(stderr=True)
+    try:
+        args = parser.parse_args(argv)
+        return int(args.func(args))
+    except (NmapError, TargetError, EnumError, NseError) as exc:
+        err.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        return 1
+    except KeyboardInterrupt:
+        err.print("\n[yellow]Scan interrupted by the user.[/yellow]")
+        return 130
 
 
 def _scripts_for(
@@ -1084,3 +1161,7 @@ def _sort_hosts(hosts: list[dict[str, Any]]) -> None:
             return (1, ip)
 
     hosts.sort(key=sort_key)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

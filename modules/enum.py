@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Service and OS enumeration on top of a discovery report.
 
 This is the second CPTS reconnaissance phase. It takes the live hosts and
@@ -8,6 +9,20 @@ is elevated. An optional UDP top-ports sweep is available with ``--udp``.
 
 from __future__ import annotations
 
+import os
+import sys
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if os.path.normcase(os.path.abspath(entry or os.getcwd())) != os.path.normcase(_script_dir)
+]
+
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import ipaddress
 import json
@@ -16,14 +31,15 @@ import re
 import shlex
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from core.parser import parse_nmap_xml
 from core.runner import (
+    NmapError,
     NmapPrivilegeError,
     NmapRunResult,
     ensure_reports_dir,
@@ -76,10 +92,43 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         epilog=(
             "examples:\n"
             "  python main.py enum --latest\n"
-            "  python main.py enum --input reports/discovery_10.10.10.10_20261118T223300.json\n"
-            "  python main.py enum -t 10.10.10.10 -p 22,80,445\n"
-            "  python main.py enum --latest --udp\n"
+            "  python main.py enum 10.10.10.10 -p 22,80,445\n"
+            "  python modules/enum.py 10.10.10.10 -p 22,80,445\n"
+            "  python modules/enum.py --latest\n"
         ),
+    )
+    _add_arguments(parser)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the parser used when this file is executed directly."""
+    parser = argparse.ArgumentParser(
+        prog="enum",
+        description=(
+            "CPTS phase 2: version detection, default scripts, and OS detection "
+            "on open TCP ports. Pass the target as the first argument or with -t, "
+            "or chain a discovery report with --latest or --input. "
+            "Use only against lab ranges or networks you are authorized to test."
+        ),
+        epilog=(
+            "examples:\n"
+            "  python modules/enum.py 10.10.10.10 -p 22,80,445\n"
+            "  python3 modules/enum.py --latest\n"
+            "  python modules/enum.py -t 10.10.10.10 -p 22 --udp\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_arguments(parser)
+    return parser
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the enum arguments shared by ``main.py`` and direct execution."""
+    parser.add_argument(
+        "target_arg",
+        nargs="?",
+        metavar="target",
+        help="Manual target: IPv4/IPv6, CIDR, hostname, or a file with one target per line",
     )
     parser.add_argument(
         "--input",
@@ -93,7 +142,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.add_argument(
         "-t",
         "--target",
-        help="Manual target: IPv4/IPv6, CIDR, hostname, or a file with one target per line",
+        dest="target_flag",
+        help="Same as the positional target. Use one of the two, not two different values",
     )
     parser.add_argument(
         "-p",
@@ -445,13 +495,42 @@ def build_enum_hosts(
 
 def _from_args(args: argparse.Namespace) -> int:
     run_enum(
-        target=args.target,
+        target=_selected_target(args),
         ports=args.ports,
         input_path=args.input,
         latest=args.latest,
         udp=args.udp,
     )
     return 0
+
+
+def _selected_target(args: argparse.Namespace) -> str | None:
+    """Return the positional target or ``-t``, rejecting two different values."""
+    positional = getattr(args, "target_arg", None)
+    flag = getattr(args, "target_flag", None)
+    if positional and flag and positional != flag:
+        raise EnumError(
+            "Pass the target either as the first argument or with -t, not two different values."
+        )
+    return flag or positional
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run service enumeration from the command line.
+
+    Nmap and input errors are printed as a single message.
+    """
+    parser = build_parser()
+    err = Console(stderr=True)
+    try:
+        args = parser.parse_args(argv)
+        return int(args.func(args))
+    except (NmapError, TargetError, EnumError) as exc:
+        err.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        return 1
+    except KeyboardInterrupt:
+        err.print("\n[yellow]Scan interrupted by the user.[/yellow]")
+        return 130
 
 
 def _require_udp_privileges() -> None:
@@ -787,3 +866,7 @@ def _sort_hosts(hosts: list[dict[str, Any]]) -> None:
             return (1, ip)
 
     hosts.sort(key=sort_key)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Host discovery and fast TCP port scanning.
 
 This is the first CPTS reconnaissance phase: find which addresses are up,
@@ -8,6 +9,20 @@ next toolkit modules), XML (raw Nmap), and a short Markdown summary.
 
 from __future__ import annotations
 
+import os
+import sys
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if os.path.normcase(os.path.abspath(entry or os.getcwd())) != os.path.normcase(_script_dir)
+]
+
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import ipaddress
 import json
@@ -15,7 +30,6 @@ import os
 import re
 import shlex
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -23,6 +37,7 @@ from rich.table import Table
 
 from core.parser import parse_nmap_xml
 from core.runner import (
+    NmapError,
     NmapPrivilegeError,
     NmapRunResult,
     ensure_reports_dir,
@@ -30,6 +45,7 @@ from core.runner import (
     privilege_hint,
     run_nmap,
 )
+from rich.markup import escape
 
 console = Console()
 
@@ -63,16 +79,48 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         epilog=(
             "examples:\n"
             "  python main.py discovery -t 10.10.10.0/24 --method arp-icmp\n"
-            "  python main.py discovery -t 10.10.10.10 --method syn\n"
-            "  python main.py discovery -t 10.10.10.10 --method skip\n"
-            "  python main.py discovery -t targets.txt --method syn --min-rate 5000\n"
+            "  python main.py discovery 10.10.10.10 --method syn\n"
+            "  python modules/discovery.py 10.10.10.10\n"
+            "  python modules/discovery.py 10.10.10.10 --method skip\n"
         ),
+    )
+    _add_arguments(parser)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the parser used when this file is executed directly."""
+    parser = argparse.ArgumentParser(
+        prog="discovery",
+        description=(
+            "CPTS phase 1: host discovery followed by a fast TCP sweep. "
+            "Pass the target as the first argument or with -t. "
+            "Use only against lab ranges or networks you are authorized to test."
+        ),
+        epilog=(
+            "examples:\n"
+            "  python modules/discovery.py 10.10.10.10\n"
+            "  python3 modules/discovery.py 10.10.10.10 --method skip\n"
+            "  python modules/discovery.py -t 10.10.10.0/24 --method arp-icmp\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_arguments(parser)
+    return parser
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the discovery arguments shared by ``main.py`` and direct execution."""
+    parser.add_argument(
+        "target_arg",
+        nargs="?",
+        metavar="target",
+        help="IPv4/IPv6 address, CIDR range, hostname, or a file with one target per line",
     )
     parser.add_argument(
         "-t",
         "--target",
-        required=True,
-        help="IPv4/IPv6 address, CIDR range, hostname, or a file with one target per line",
+        dest="target_flag",
+        help="Same as the positional target. Use one of the two, not two different values",
     )
     parser.add_argument(
         "--method",
@@ -295,8 +343,40 @@ def fast_scan_arguments(min_rate: int) -> tuple[str, list[str]]:
 
 
 def _from_args(args: argparse.Namespace) -> int:
-    run_discovery(args.target, args.method, args.min_rate)
+    run_discovery(_selected_target(args), args.method, args.min_rate)
     return 0
+
+
+def _selected_target(args: argparse.Namespace) -> str:
+    """Return the positional target or ``-t``, rejecting two different values."""
+    positional = getattr(args, "target_arg", None)
+    flag = getattr(args, "target_flag", None)
+    if positional and flag and positional != flag:
+        raise TargetError(
+            "Pass the target either as the first argument or with -t, not two different values."
+        )
+    target = flag or positional
+    if not target:
+        raise TargetError("Pass a target as the first argument or with -t.")
+    return target
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run discovery from the command line.
+
+    Nmap and target errors are printed as a single message.
+    """
+    parser = build_parser()
+    err = Console(stderr=True)
+    try:
+        args = parser.parse_args(argv)
+        return int(args.func(args))
+    except (NmapError, TargetError) as exc:
+        err.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        return 1
+    except KeyboardInterrupt:
+        err.print("\n[yellow]Scan interrupted by the user.[/yellow]")
+        return 130
 
 
 def _require_discovery_privileges(method: str) -> None:
@@ -624,3 +704,7 @@ def _relative(path: Path) -> str:
         return path.resolve().relative_to(root).as_posix()
     except ValueError:
         return str(path)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -33,7 +33,7 @@ requirements.txt
 reports/                Artefactos de cada ejecución (no se versiona)
 ```
 
-`reports/` se crea sola en la primera ejecución. Ni `reports/` ni `.cursor/` se suben al repositorio.
+`reports/` se crea sola en la primera ejecución. Ni `reports/` ni `.cursor/` se suben al repositorio. Cada script de `modules/` también se ejecuta solo: el objetivo puede ir como primer argumento (`python modules/discovery.py 10.10.10.10`) o con `-t`.
 
 ## Módulo `discovery` — Host Discovery y Fast Port Scanning
 
@@ -71,6 +71,13 @@ Descubrimiento ARP/ICMP de un rango de laboratorio y barrido de puertos sobre lo
 
 ```bash
 python main.py discovery -t 10.10.10.0/24 --method arp-icmp
+```
+
+El módulo también se lanza directo. El objetivo es el primer argumento posicional, y `-t` sigue disponible:
+
+```bash
+python modules/discovery.py 10.10.10.10
+python modules/discovery.py 10.10.10.10 --method skip
 ```
 
 El mismo flujo cuando el host filtra ICMP:
@@ -222,6 +229,13 @@ Encadenar con el discovery que acaba de terminar:
 python main.py enum --latest
 ```
 
+Ejecución directa. El objetivo va el primero; `--latest` sigue sirviendo cuando no hay target:
+
+```bash
+python modules/enum.py 10.10.10.10 -p 22,80,445
+python modules/enum.py --latest
+```
+
 Un informe concreto, más el barrido UDP de los 50 puertos más habituales:
 
 ```bash
@@ -355,6 +369,13 @@ Encadenar con el enum o el discovery más reciente:
 
 ```bash
 python main.py nse --latest
+```
+
+Ejecución directa, con el mismo argumento posicional:
+
+```bash
+python modules/nse.py 10.10.10.10 -p 22,80,445
+python modules/nse.py --latest
 ```
 
 El mismo flujo más la categoría de vulnerabilidades:
